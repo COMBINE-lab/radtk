@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
 
+mod cat;
+use crate::cat::CatOpts;
+
 /// testing out minimizer space suffix arrays
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -15,20 +18,12 @@ pub enum Commands {
     Cat(CatOpts),
 }
 
-/// options relevant to building the minimizer space suffix array
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct CatOpts {
-    /// ',' separated list of input RAD files
-    #[arg(short, long, value_delimiter = ',')]
-    inputs: Vec<std::path::PathBuf>,
-
-    /// output RAD file
-    #[arg(short, long)]
-    output: std::path::PathBuf,
-}
-
-fn main() {
+fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
     println!("args = {:?}!", args);
+
+    match args.command {
+        Commands::Cat(cat_opts) => cat::cat(&cat_opts)?,
+    }
+    Ok(())
 }
