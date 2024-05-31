@@ -1,6 +1,6 @@
 use anyhow::bail;
 use clap::Parser;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use tracing::{error, info, warn};
 
 /// options relevant to building the minimizer space suffix array
@@ -33,7 +33,8 @@ pub fn cat(cat_opts: &CatOpts) -> anyhow::Result<()> {
         .inputs
         .first()
         .expect("input should contain multiple RAD files");
-    let f = std::fs::File::open(&fname)?;
+
+    let f = std::fs::File::open(fname)?;
     let mut ifile = BufReader::new(f);
     let mut first_prelude = libradicl::header::RadPrelude::from_bytes(&mut ifile)?;
     let first_tag_map = first_prelude
@@ -44,14 +45,18 @@ pub fn cat(cat_opts: &CatOpts) -> anyhow::Result<()> {
     let mut total_chunks = first_prelude.hdr.num_chunks;
 
     for in_file in cat_opts.inputs.iter().skip(1) {
-        let f = std::fs::File::open(&in_file)?;
+        let f = std::fs::File::open(in_file)?;
         let mut ifile = BufReader::new(f);
         let new_prelude = libradicl::header::RadPrelude::from_bytes(&mut ifile)?;
-        if new_prelude == first_prelude {
+        let new_tag_map = new_prelude
+            .file_tags
+            .try_parse_tags_from_bytes(&mut ifile)?;
+
+        if (new_prelude == first_prelude) && (first_tag_map == new_tag_map) {
             total_chunks += new_prelude.hdr.num_chunks;
         } else {
             error!(
-                "The prelude for ({}) is incompatible with the prelude for ({}); cannot proceed",
+                "The prelude or file-level tags for ({}) is incompatible with the prelude or file-level tags for ({}); cannot proceed",
                 cat_opts.inputs.first().unwrap().display(),
                 in_file.display()
             );
@@ -81,7 +86,7 @@ pub fn cat(cat_opts: &CatOpts) -> anyhow::Result<()> {
         .expect("cannot write values of file-level tagl map to output file");
 
     for in_file in cat_opts.inputs.iter() {
-        let f = std::fs::File::open(&in_file)?;
+        let f = std::fs::File::open(in_file)?;
         let mut ifile = BufReader::new(f);
         let prelude = libradicl::header::RadPrelude::from_bytes(&mut ifile)?;
         let _tag_map = prelude.file_tags.try_parse_tags_from_bytes(&mut ifile)?;
