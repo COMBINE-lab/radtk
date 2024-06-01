@@ -3,6 +3,8 @@ use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*, EnvFilter};
 
 mod cat;
 use crate::cat::CatOpts;
+mod view;
+use crate::view::ViewOpts;
 
 /// testing out minimizer space suffix arrays
 #[derive(Debug, Parser)]
@@ -17,6 +19,8 @@ pub struct Cli {
 pub enum Commands {
     /// concatenate the records in a sequence of RAD files
     Cat(CatOpts),
+    /// view a text representation of the RAD file
+    View(ViewOpts),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,10 +38,10 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Cli::parse();
-    println!("args = {:?}!", args);
 
     match args.command {
         Commands::Cat(cat_opts) => cat::cat(&cat_opts)?,
+        Commands::View(view_opts) => view::view(&view_opts)?,
     }
     Ok(())
 }
