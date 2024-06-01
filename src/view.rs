@@ -48,7 +48,7 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
     let f = std::fs::File::open(&view_opts.input)?;
     let mut ifile = BufReader::new(f);
     let prelude = libradicl::header::RadPrelude::from_bytes(&mut ifile)?;
-    let _tag_map = prelude.file_tags.try_parse_tags_from_bytes(&mut ifile)?;
+    let file_tag_map = prelude.file_tags.try_parse_tags_from_bytes(&mut ifile)?;
 
     writeln!(output_stream, "{{")?;
     if !view_opts.no_header {
@@ -161,6 +161,26 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
         pub aln_tags: TagSection,
         */
         writeln!(output_stream, "}},")?;
+
+        // file tags
+        writeln!(output_stream, "\"file_tags\" : [")?;
+
+        let nft = prelude.file_tags.tags.len();
+        for (i, td) in prelude.file_tags.tags.iter().enumerate() {
+            if let Some(tv) = file_tag_map.get(&td.name) {
+                write!(
+                    output_stream,
+                    "{{ \"name\" : \"{}\", \"val\" : \"{:?}\" }}",
+                    &td.name, tv
+                )?;
+                if i == nft - 1 {
+                    write!(output_stream, "\n")?;
+                } else {
+                    write!(output_stream, ",\n")?;
+                }
+            }
+        }
+        writeln!(output_stream, "],")?;
     }
 
     writeln!(output_stream, "\"mapped_records\" : [")?;
