@@ -6,7 +6,7 @@ use libradicl::record::{
 use needletail::bitkmer::*;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use tracing::{error, info, warn};
 
 #[derive(Clone, Debug, PartialEq, ValueEnum)]
@@ -18,9 +18,17 @@ pub enum RadFileType {
 
 /// **NOTE**: This representation is a hack and we should think of
 /// a better way to handle generic information over these.
-pub struct ExtraRecordInfo {
+pub struct ExtraRecordInfo<'a> {
     pub bc_len: usize,
     pub umi_len: usize,
+    pub use_ref_name: bool,
+    pub prelude: &'a libradicl::header::RadPrelude,
+}
+
+impl<'a> ExtraRecordInfo<'a> {
+    pub fn ref_name(&self, i: usize) -> &str {
+        &self.prelude.hdr.ref_names[i]
+    }
 }
 
 pub trait WriteMappingRecord {
@@ -34,23 +42,34 @@ pub trait WriteMappingRecord {
 impl WriteMappingRecord for libradicl::record::PiscemBulkReadRecord {
     fn write_records(
         &self,
-        _ctx: &ExtraRecordInfo,
+        ctx: &ExtraRecordInfo,
         output_stream: &mut Box<dyn Write>,
     ) -> anyhow::Result<()> {
         writeln!(output_stream, "{{")?;
         writeln!(
             output_stream,
-            "\t\"frag_type\" : \"{:?}\",",
+            " \"frag_type\" : \"{:?}\",",
             libradicl::rad_types::MappingType::from_u8(self.frag_type)
         )?;
-        writeln!(output_stream, "\t\"alns\" : [")?;
+        writeln!(output_stream, " \"alns\" : [")?;
 
         for i in 0..(self.refs.len()) {
-            write!(
-                output_stream,
-                "\t\t{{\"ref\": {}, \"dir\": \"{:?}\", \"pos\": {}, \"flen\": {} }}",
-                self.refs[i], self.dirs[i], self.positions[i], self.frag_lengths[i]
-            )?;
+            if ctx.use_ref_name {
+                write!(
+                    output_stream,
+                    "  {{\"ref\": {:?}, \"dir\": \"{:?}\", \"pos\": {}, \"flen\": {} }}",
+                    ctx.ref_name(self.refs[i] as usize),
+                    self.dirs[i],
+                    self.positions[i],
+                    self.frag_lengths[i]
+                )?;
+            } else {
+                write!(
+                    output_stream,
+                    "  {{\"ref\": {}, \"dir\": \"{:?}\", \"pos\": {}, \"flen\": {} }}",
+                    self.refs[i], self.dirs[i], self.positions[i], self.frag_lengths[i]
+                )?;
+            }
 
             if i < self.refs.len() - 1 {
                 write!(output_stream, ",\n")?;
@@ -59,7 +78,7 @@ impl WriteMappingRecord for libradicl::record::PiscemBulkReadRecord {
             }
         }
 
-        writeln!(output_stream, "\t]")?;
+        writeln!(output_stream, " ]")?;
         write!(output_stream, "}}")?;
         Ok(())
     }
@@ -77,19 +96,28 @@ impl WriteMappingRecord for libradicl::record::AlevinFryReadRecord {
         writeln!(output_stream, "{{")?;
         writeln!(
             output_stream,
-            "\t\"barcode\" : \"{:?}\", \"umi\" : \"{:?}\",",
+            " \"barcode\" : \"{:?}\", \"umi\" : \"{:?}\",",
             unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
             unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
         )?;
-        writeln!(output_stream, "\t\"alns\" : [")?;
+        writeln!(output_stream, " \"alns\" : [")?;
 
         for i in 0..(self.refs.len()) {
-            write!(
-                output_stream,
-                "\t\t{{\"ref\": {}, \"dir\": \"{}\" }}",
-                self.refs[i],
-                if self.dirs[i] { "fw" } else { "rc" }
-            )?;
+            if ctx.use_ref_name {
+                write!(
+                    output_stream,
+                    "  {{\"ref\": {:?}, \"dir\": \"{}\" }}",
+                    ctx.ref_name(self.refs[i] as usize),
+                    if self.dirs[i] { "fw" } else { "rc" }
+                )?;
+            } else {
+                write!(
+                    output_stream,
+                    "  {{\"ref\": {}, \"dir\": \"{}\" }}",
+                    self.refs[i],
+                    if self.dirs[i] { "fw" } else { "rc" }
+                )?;
+            }
 
             if i < self.refs.len() - 1 {
                 write!(output_stream, ",\n")?;
@@ -98,7 +126,7 @@ impl WriteMappingRecord for libradicl::record::AlevinFryReadRecord {
             }
         }
 
-        writeln!(output_stream, "\t]")?;
+        writeln!(output_stream, " ]")?;
         write!(output_stream, "}}")?;
         Ok(())
     }
@@ -117,7 +145,7 @@ pub fn write_records<
     output_stream: &mut Box<dyn Write>,
 ) -> anyhow::Result<()> {
     let tag_context = prelude.get_record_context::<RecordContext>()?;
-    let num_chunks = 10; //prelude.hdr.num_chunks
+    let num_chunks = prelude.hdr.num_chunks; // 10;
     for chunk_num in 0..(num_chunks) {
         let chunk = libradicl::chunk::Chunk::<RecordType>::from_bytes(ifile, &tag_context);
         let nreads = chunk.reads.len();
@@ -148,6 +176,10 @@ pub struct ViewOpts {
     /// the type of input RAD file
     #[arg(short, long)]
     rad_type: RadFileType,
+
+    /// use the reference name rather than ID in the mapped records
+    #[arg(long)]
+    use_ref_name: bool,
 
     /// skip printing the header and file-level tags (i.e. only print the mapping reacords)
     #[arg(long)]
@@ -190,89 +222,65 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
 
         writeln!(output_stream, "\"tag_descriptions\" : {{")?;
 
-        writeln!(output_stream, "\t\"file_tag_desc\" : {{")?;
+        writeln!(output_stream, " \"file_tag_desc\" : {{")?;
         writeln!(
             output_stream,
-            "\t\t\"label\" : \"{:?}\",",
+            "  \"label\" : \"{:?}\",",
             prelude.file_tags.label
         )?;
 
-        writeln!(output_stream, "\t\t\"tag_desc\" : [")?;
+        writeln!(output_stream, "  \"tag_desc\" : [")?;
         for (i, td) in prelude.file_tags.tags.iter().enumerate() {
-            writeln!(
-                output_stream,
-                "\t\t\t{{\n\t\t\t \"name\" : \"{}\",",
-                td.name
-            )?;
-            write!(
-                output_stream,
-                "\t\t\t \"desc\" : \"{:?}\"\n\t\t\t}}",
-                td.typeid
-            )?;
+            writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
+            write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
             if i < (prelude.file_tags.tags.len() - 1) as usize {
                 writeln!(output_stream, ",")?;
             } else {
                 write!(output_stream, "\n")?;
             }
         }
-        writeln!(output_stream, "\t\t]")?;
-        writeln!(output_stream, "\t}},")?;
+        writeln!(output_stream, "  ]")?;
+        writeln!(output_stream, " }},")?;
 
-        writeln!(output_stream, "\t\"read_tag_desc\" : {{")?;
+        writeln!(output_stream, " \"read_tag_desc\" : {{")?;
         writeln!(
             output_stream,
-            "\t\t\"label\" : \"{:?}\",",
+            "  \"label\" : \"{:?}\",",
             prelude.read_tags.label
         )?;
 
-        writeln!(output_stream, "\t\t\"tag_desc\" : [")?;
+        writeln!(output_stream, "  \"tag_desc\" : [")?;
         for (i, td) in prelude.read_tags.tags.iter().enumerate() {
-            writeln!(
-                output_stream,
-                "\t\t\t{{\n\t\t\t \"name\" : \"{}\",",
-                td.name
-            )?;
-            write!(
-                output_stream,
-                "\t\t\t \"desc\" : \"{:?}\"\n\t\t\t}}",
-                td.typeid
-            )?;
+            writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
+            write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
             if i < (prelude.read_tags.tags.len() - 1) as usize {
                 writeln!(output_stream, ",")?;
             } else {
                 write!(output_stream, "\n")?;
             }
         }
-        writeln!(output_stream, "\t\t]")?;
-        writeln!(output_stream, "\t}},")?;
+        writeln!(output_stream, "  ]")?;
+        writeln!(output_stream, " }},")?;
 
-        writeln!(output_stream, "\t\"aln_tag_desc\" : {{")?;
+        writeln!(output_stream, " \"aln_tag_desc\" : {{")?;
         writeln!(
             output_stream,
-            "\t\t\"label\" : \"{:?}\",",
+            "  \"label\" : \"{:?}\",",
             prelude.aln_tags.label
         )?;
 
-        writeln!(output_stream, "\t\t\"tag_desc\" : [")?;
+        writeln!(output_stream, "  \"tag_desc\" : [")?;
         for (i, td) in prelude.aln_tags.tags.iter().enumerate() {
-            writeln!(
-                output_stream,
-                "\t\t\t{{\n\t\t\t \"name\" : \"{}\",",
-                td.name
-            )?;
-            write!(
-                output_stream,
-                "\t\t\t \"desc\" : \"{:?}\"\n\t\t\t}}",
-                td.typeid
-            )?;
+            writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
+            write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
             if i < (prelude.aln_tags.tags.len() - 1) as usize {
                 writeln!(output_stream, ",")?;
             } else {
                 write!(output_stream, "\n")?;
             }
         }
-        writeln!(output_stream, "\t\t]")?;
-        writeln!(output_stream, "\t}}")?;
+        writeln!(output_stream, "  ]")?;
+        writeln!(output_stream, " }}")?;
 
         //writeln!(output_stream, "{:?}", prelude.file_tags)?;
         /*
@@ -306,8 +314,9 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
     let mut extra_record_info = ExtraRecordInfo {
         bc_len: 0,
         umi_len: 0,
+        use_ref_name: view_opts.use_ref_name,
+        prelude: &prelude,
     };
-    use libradicl::rad_types::TagValue;
 
     writeln!(output_stream, "\"mapped_records\" : [")?;
     match view_opts.rad_type {
@@ -320,25 +329,18 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
             )?;
         }
         RadFileType::SingleCell => {
-            // *NOTE* should not be necessary as try_into should exist!
-            let cblen = match file_tag_map.get("cblen") {
-                Some(TagValue::U8(x)) => *x as usize,
-                Some(TagValue::U16(x)) => *x as usize,
-                Some(TagValue::U32(x)) => *x as usize,
-                Some(TagValue::U64(x)) => *x as usize,
-                _ => bail!("invalid tag value"),
-            };
+            let cblen: u64 = file_tag_map
+                .get("cblen")
+                .expect("tag map must contain \"cblen\" value")
+                .try_into()?;
 
-            let ulen: usize = match file_tag_map.get("ulen") {
-                Some(TagValue::U8(x)) => *x as usize,
-                Some(TagValue::U16(x)) => *x as usize,
-                Some(TagValue::U32(x)) => *x as usize,
-                Some(TagValue::U64(x)) => *x as usize,
-                _ => bail!("invalid tag value"),
-            };
+            let ulen: u64 = file_tag_map
+                .get("ulen")
+                .expect("tag map must contain \"ulen\" value")
+                .try_into()?;
 
-            extra_record_info.bc_len = cblen;
-            extra_record_info.umi_len = ulen;
+            extra_record_info.bc_len = cblen as usize;
+            extra_record_info.umi_len = ulen as usize;
 
             write_records::<AlevinFryRecordContext, AlevinFryReadRecord, BufReader<std::fs::File>>(
                 &prelude,
