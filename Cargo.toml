@@ -9,5 +9,6 @@ edition = "2021"
 anyhow = "1.0.86"
 clap = { version = "4.5.4", features = ["derive"] }
 libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.0" }
+needletail = "0.5.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["tracing", "env-filter"] }

@@ -1,9 +1,12 @@
 use anyhow::bail;
 use clap::{Parser, ValueEnum};
-use libradicl::record::{PiscemBulkReadRecord, PiscemBulkRecordContext};
+use libradicl::record::{
+    AlevinFryReadRecord, AlevinFryRecordContext, PiscemBulkReadRecord, PiscemBulkRecordContext,
+};
+use needletail::bitkmer::*;
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use tracing::{error, info, warn};
 
 #[derive(Clone, Debug, PartialEq, ValueEnum)]
@@ -11,6 +14,123 @@ pub enum RadFileType {
     Bulk,
     SingleCell,
     Unknown,
+}
+
+/// **NOTE**: This representation is a hack and we should think of
+/// a better way to handle generic information over these.
+pub struct ExtraRecordInfo {
+    pub bc_len: usize,
+    pub umi_len: usize,
+}
+
+pub trait WriteMappingRecord {
+    fn write_records(
+        &self,
+        ctx: &ExtraRecordInfo,
+        output_stream: &mut Box<dyn Write>,
+    ) -> anyhow::Result<()>;
+}
+
+impl WriteMappingRecord for libradicl::record::PiscemBulkReadRecord {
+    fn write_records(
+        &self,
+        _ctx: &ExtraRecordInfo,
+        output_stream: &mut Box<dyn Write>,
+    ) -> anyhow::Result<()> {
+        writeln!(output_stream, "{{")?;
+        writeln!(
+            output_stream,
+            "\t\"frag_type\" : \"{:?}\",",
+            libradicl::rad_types::MappingType::from_u8(self.frag_type)
+        )?;
+        writeln!(output_stream, "\t\"alns\" : [")?;
+
+        for i in 0..(self.refs.len()) {
+            write!(
+                output_stream,
+                "\t\t{{\"ref\": {}, \"dir\": \"{:?}\", \"pos\": {}, \"flen\": {} }}",
+                self.refs[i], self.dirs[i], self.positions[i], self.frag_lengths[i]
+            )?;
+
+            if i < self.refs.len() - 1 {
+                write!(output_stream, ",\n")?;
+            } else {
+                write!(output_stream, "\n")?;
+            }
+        }
+
+        writeln!(output_stream, "\t]")?;
+        write!(output_stream, "}}")?;
+        Ok(())
+    }
+}
+
+impl WriteMappingRecord for libradicl::record::AlevinFryReadRecord {
+    fn write_records(
+        &self,
+        ctx: &ExtraRecordInfo,
+        output_stream: &mut Box<dyn Write>,
+    ) -> anyhow::Result<()> {
+        let bc_mer: BitKmer = (self.bc, ctx.bc_len as u8);
+        let umi_mer: BitKmer = (self.umi, ctx.umi_len as u8);
+
+        writeln!(output_stream, "{{")?;
+        writeln!(
+            output_stream,
+            "\t\"barcode\" : \"{:?}\", \"umi\" : \"{:?}\",",
+            unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
+            unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
+        )?;
+        writeln!(output_stream, "\t\"alns\" : [")?;
+
+        for i in 0..(self.refs.len()) {
+            write!(
+                output_stream,
+                "\t\t{{\"ref\": {}, \"dir\": \"{}\" }}",
+                self.refs[i],
+                if self.dirs[i] { "fw" } else { "rc" }
+            )?;
+
+            if i < self.refs.len() - 1 {
+                write!(output_stream, ",\n")?;
+            } else {
+                write!(output_stream, "\n")?;
+            }
+        }
+
+        writeln!(output_stream, "\t]")?;
+        write!(output_stream, "}}")?;
+        Ok(())
+    }
+}
+
+pub fn write_records<
+    RecordContext: std::fmt::Debug + Clone + libradicl::record::RecordContext,
+    RecordType: std::fmt::Debug
+        + libradicl::record::MappedRecord<ParsingContext = RecordContext>
+        + WriteMappingRecord,
+    R: std::io::BufRead,
+>(
+    prelude: &libradicl::header::RadPrelude,
+    extra_record_info: &ExtraRecordInfo,
+    ifile: &mut R,
+    output_stream: &mut Box<dyn Write>,
+) -> anyhow::Result<()> {
+    let tag_context = prelude.get_record_context::<RecordContext>()?;
+    let num_chunks = 10; //prelude.hdr.num_chunks
+    for chunk_num in 0..(num_chunks) {
+        let chunk = libradicl::chunk::Chunk::<RecordType>::from_bytes(ifile, &tag_context);
+        let nreads = chunk.reads.len();
+        for (rnum, r) in chunk.reads.iter().enumerate() {
+            r.write_records(extra_record_info, output_stream)?;
+            if (chunk_num == num_chunks - 1) && (rnum == nreads - 1) {
+                write!(output_stream, "\n")?;
+            } else {
+                write!(output_stream, ",\n")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// options relevant to building the minimizer space suffix array
@@ -183,44 +303,53 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
         writeln!(output_stream, "],")?;
     }
 
+    let mut extra_record_info = ExtraRecordInfo {
+        bc_len: 0,
+        umi_len: 0,
+    };
+    use libradicl::rad_types::TagValue;
+
     writeln!(output_stream, "\"mapped_records\" : [")?;
-    let tag_context = prelude.get_record_context::<PiscemBulkRecordContext>()?;
-    let num_chunks = 10; //prelude.hdr.num_chunks
-    for chunk_num in 0..(num_chunks) {
-        let chunk =
-            libradicl::chunk::Chunk::<PiscemBulkReadRecord>::from_bytes(&mut ifile, &tag_context);
-        let nreads = chunk.reads.len();
-        for (rnum, r) in chunk.reads.iter().enumerate() {
-            writeln!(output_stream, "{{")?;
-            writeln!(
-                output_stream,
-                "\t\"frag_type\" : \"{:?}\",",
-                libradicl::rad_types::MappingType::from_u8(r.frag_type)
+    match view_opts.rad_type {
+        RadFileType::Bulk => {
+            write_records::<PiscemBulkRecordContext, PiscemBulkReadRecord, BufReader<std::fs::File>>(
+                &prelude,
+                &extra_record_info,
+                &mut ifile,
+                &mut output_stream,
             )?;
-            writeln!(output_stream, "\t\"alns\" : [")?;
-
-            for i in 0..(r.refs.len()) {
-                write!(
-                    output_stream,
-                    "\t\t{{\"ref\": {}, \"dir\": \"{:?}\", \"pos\": {}, \"flen\": {} }}",
-                    r.refs[i], r.dirs[i], r.positions[i], r.frag_lengths[i]
-                )?;
-                if i < r.refs.len() - 1 {
-                    write!(output_stream, ",\n")?;
-                } else {
-                    write!(output_stream, "\n")?;
-                }
-            }
-
-            writeln!(output_stream, "\t]")?;
-            write!(output_stream, "}}")?;
-            if (chunk_num == num_chunks - 1) && (rnum == nreads - 1) {
-                write!(output_stream, "\n")?;
-            } else {
-                write!(output_stream, ",\n")?;
-            }
         }
+        RadFileType::SingleCell => {
+            // *NOTE* should not be necessary as try_into should exist!
+            let cblen = match file_tag_map.get("cblen") {
+                Some(TagValue::U8(x)) => *x as usize,
+                Some(TagValue::U16(x)) => *x as usize,
+                Some(TagValue::U32(x)) => *x as usize,
+                Some(TagValue::U64(x)) => *x as usize,
+                _ => bail!("invalid tag value"),
+            };
+
+            let ulen: usize = match file_tag_map.get("ulen") {
+                Some(TagValue::U8(x)) => *x as usize,
+                Some(TagValue::U16(x)) => *x as usize,
+                Some(TagValue::U32(x)) => *x as usize,
+                Some(TagValue::U64(x)) => *x as usize,
+                _ => bail!("invalid tag value"),
+            };
+
+            extra_record_info.bc_len = cblen;
+            extra_record_info.umi_len = ulen;
+
+            write_records::<AlevinFryRecordContext, AlevinFryReadRecord, BufReader<std::fs::File>>(
+                &prelude,
+                &extra_record_info,
+                &mut ifile,
+                &mut output_stream,
+            )?;
+        }
+        RadFileType::Unknown => bail!("Unknown RadFileType not supported yet"),
     }
+
     writeln!(output_stream, "]")?;
 
     writeln!(output_stream, "}}")?;
