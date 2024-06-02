@@ -2,7 +2,25 @@
 name = "radtk"
 version = "0.1.0"
 edition = "2021"
-
+repository = "https://github.com/COMBINE-lab/radtk"
+authors = [ "Rob Patro <rob@cs.umd.edu>" ]
+description = "A toolkit for working with RAD files"
+readme = "README.md"
+license-file = "LICENSE"
+include = [
+  "/src/*.rs",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/LICENSE",
+]
+keywords = [
+  "RAD-file",
+  "RNA-seq",
+  "single-cell",
+  "preprocessing"
+]
+categories = ["command-line-utilities", "science"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -12,3 +30,26 @@ libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develo
 needletail = "0.5.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["tracing", "env-filter", "fmt", "std"] }
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.15.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# Publish jobs to run in CI
+pr-run-mode = "plan"
+# Whether to install an updater program
+install-updater = true
+
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-14"
