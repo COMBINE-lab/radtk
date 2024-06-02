@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     // variable is not set then set the logging level to
     // INFO.
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(std::io::stderr))
         .with(
             EnvFilter::builder()
                 .with_default_directive(LevelFilter::INFO.into())

@@ -4,7 +4,6 @@ use libradicl::record::{
     AlevinFryReadRecord, AlevinFryRecordContext, PiscemBulkReadRecord, PiscemBulkRecordContext,
 };
 use needletail::bitkmer::*;
-use std::fs::File;
 use std::io;
 use std::io::{BufReader, Write};
 use tracing::{error, info, warn};
@@ -16,6 +15,36 @@ pub enum RadFileType {
     Unknown,
 }
 
+/// options related to printing a RAD file
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+pub struct ViewOpts {
+    /// the input RAD file to print
+    #[arg(short, long, required = true)]
+    input: std::path::PathBuf,
+
+    /// output file where the JSON format RAD file will be written;
+    /// if not provided, the output will be written to standard out.
+    #[arg(short, long)]
+    output: Option<std::path::PathBuf>,
+
+    /// the type of input RAD file
+    #[arg(short, long)]
+    rad_type: RadFileType,
+
+    /// use the reference name rather than ID in the mapped records
+    #[arg(long)]
+    use_ref_name: bool,
+
+    /// skip printing the header and file-level tags (i.e. only print the mapping reacords)
+    #[arg(long)]
+    no_header: bool,
+
+    /// print the records from at most this many chunks
+    #[arg(long)]
+    max_chunks: Option<usize>,
+}
+
 /// **NOTE**: This representation is a hack and we should think of
 /// a better way to handle generic information over these.
 pub struct ExtraRecordInfo<'a> {
@@ -23,6 +52,7 @@ pub struct ExtraRecordInfo<'a> {
     pub umi_len: usize,
     pub use_ref_name: bool,
     pub prelude: &'a libradicl::header::RadPrelude,
+    pub max_chunks: Option<usize>,
 }
 
 impl<'a> ExtraRecordInfo<'a> {
@@ -96,7 +126,7 @@ impl WriteMappingRecord for libradicl::record::AlevinFryReadRecord {
         writeln!(output_stream, "{{")?;
         writeln!(
             output_stream,
-            " \"barcode\" : \"{:?}\", \"umi\" : \"{:?}\",",
+            " \"barcode\" : {:?},\n \"umi\" : {:?},",
             unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
             unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
         )?;
@@ -145,7 +175,9 @@ pub fn write_records<
     output_stream: &mut Box<dyn Write>,
 ) -> anyhow::Result<()> {
     let tag_context = prelude.get_record_context::<RecordContext>()?;
-    let num_chunks = prelude.hdr.num_chunks; // 10;
+    let num_chunks = extra_record_info
+        .max_chunks
+        .unwrap_or(prelude.hdr.num_chunks as usize);
     for chunk_num in 0..(num_chunks) {
         let chunk = libradicl::chunk::Chunk::<RecordType>::from_bytes(ifile, &tag_context);
         let nreads = chunk.reads.len();
@@ -161,31 +193,6 @@ pub fn write_records<
     Ok(())
 }
 
-/// options relevant to building the minimizer space suffix array
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct ViewOpts {
-    /// ',' separated list of input RAD files
-    #[arg(short, long, required = true)]
-    input: std::path::PathBuf,
-
-    /// output RAD file
-    #[arg(short, long)]
-    output: Option<std::path::PathBuf>,
-
-    /// the type of input RAD file
-    #[arg(short, long)]
-    rad_type: RadFileType,
-
-    /// use the reference name rather than ID in the mapped records
-    #[arg(long)]
-    use_ref_name: bool,
-
-    /// skip printing the header and file-level tags (i.e. only print the mapping reacords)
-    #[arg(long)]
-    no_header: bool,
-}
-
 pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
     if view_opts.rad_type == RadFileType::Unknown {
         error!("Unknown file type not yet supported");
@@ -193,7 +200,12 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
     }
 
     let mut output_stream: Box<dyn Write> = match view_opts.output {
-        Some(ref path) => File::open(path).map(|f| Box::new(f) as Box<dyn Write>)?,
+        Some(ref path) => std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map(|f| Box::new(std::io::BufWriter::new(f)) as Box<dyn Write>)?,
         None => Box::new(io::stdout()),
     };
 
@@ -316,6 +328,7 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
         umi_len: 0,
         use_ref_name: view_opts.use_ref_name,
         prelude: &prelude,
+        max_chunks: view_opts.max_chunks,
     };
 
     writeln!(output_stream, "\"mapped_records\" : [")?;
