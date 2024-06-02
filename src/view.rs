@@ -8,6 +8,7 @@ use std::io;
 use std::io::{BufReader, Write};
 use tracing::{error, info, warn};
 
+/// The types of RAD files supported
 #[derive(Clone, Debug, PartialEq, ValueEnum)]
 pub enum RadFileType {
     Bulk,
@@ -56,11 +57,14 @@ pub struct ExtraRecordInfo<'a> {
 }
 
 impl<'a> ExtraRecordInfo<'a> {
+    /// Provides the ability to use the header to lookup
+    /// the name of a target given its ID.
     pub fn ref_name(&self, i: usize) -> &str {
         &self.prelude.hdr.ref_names[i]
     }
 }
 
+/// The ability to write mapping records of different types
 pub trait WriteMappingRecord {
     fn write_records(
         &self,
@@ -175,9 +179,14 @@ pub fn write_records<
     output_stream: &mut Box<dyn Write>,
 ) -> anyhow::Result<()> {
     let tag_context = prelude.get_record_context::<RecordContext>()?;
+    let total_chunks = prelude.hdr.num_chunks as usize;
+    // output either the requested number of chunks, or all of them if no
+    // request is provided (but never try to print more than the total).
     let num_chunks = extra_record_info
         .max_chunks
-        .unwrap_or(prelude.hdr.num_chunks as usize);
+        .unwrap_or(total_chunks)
+        .min(total_chunks);
+    // write out each chunk.
     for chunk_num in 0..(num_chunks) {
         let chunk = libradicl::chunk::Chunk::<RecordType>::from_bytes(ifile, &tag_context);
         let nreads = chunk.reads.len();
@@ -190,6 +199,119 @@ pub fn write_records<
             }
         }
     }
+    Ok(())
+}
+
+pub fn write_header(
+    prelude: &libradicl::header::RadPrelude,
+    file_tag_map: &libradicl::rad_types::TagMap,
+    output_stream: &mut Box<dyn Write>,
+) -> anyhow::Result<()> {
+    writeln!(output_stream, "\"rad_header\" : {{")?;
+    writeln!(output_stream, "\"is_paired\" : {},", prelude.hdr.is_paired)?;
+    writeln!(output_stream, "\"ref_count\" : {},", prelude.hdr.ref_count)?;
+
+    writeln!(output_stream, "\"refs\" : [")?;
+    for (i, rn) in prelude.hdr.ref_names.iter().enumerate() {
+        write!(output_stream, "\"{}\"", rn)?;
+        if i < (prelude.hdr.ref_count - 1) as usize {
+            writeln!(output_stream, ",")?;
+        }
+    }
+    writeln!(output_stream, "],")?;
+
+    writeln!(output_stream, "\"num_chunks\" : {}", prelude.hdr.num_chunks)?;
+    writeln!(output_stream, "}},")?;
+
+    writeln!(output_stream, "\"tag_descriptions\" : {{")?;
+
+    writeln!(output_stream, " \"file_tag_desc\" : {{")?;
+    writeln!(
+        output_stream,
+        "  \"label\" : \"{:?}\",",
+        prelude.file_tags.label
+    )?;
+
+    writeln!(output_stream, "  \"tag_desc\" : [")?;
+    for (i, td) in prelude.file_tags.tags.iter().enumerate() {
+        writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
+        write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
+        if i < (prelude.file_tags.tags.len() - 1) as usize {
+            writeln!(output_stream, ",")?;
+        } else {
+            write!(output_stream, "\n")?;
+        }
+    }
+    writeln!(output_stream, "  ]")?;
+    writeln!(output_stream, " }},")?;
+
+    writeln!(output_stream, " \"read_tag_desc\" : {{")?;
+    writeln!(
+        output_stream,
+        "  \"label\" : \"{:?}\",",
+        prelude.read_tags.label
+    )?;
+
+    writeln!(output_stream, "  \"tag_desc\" : [")?;
+    for (i, td) in prelude.read_tags.tags.iter().enumerate() {
+        writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
+        write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
+        if i < (prelude.read_tags.tags.len() - 1) as usize {
+            writeln!(output_stream, ",")?;
+        } else {
+            write!(output_stream, "\n")?;
+        }
+    }
+    writeln!(output_stream, "  ]")?;
+    writeln!(output_stream, " }},")?;
+
+    writeln!(output_stream, " \"aln_tag_desc\" : {{")?;
+    writeln!(
+        output_stream,
+        "  \"label\" : \"{:?}\",",
+        prelude.aln_tags.label
+    )?;
+
+    writeln!(output_stream, "  \"tag_desc\" : [")?;
+    for (i, td) in prelude.aln_tags.tags.iter().enumerate() {
+        writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
+        write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
+        if i < (prelude.aln_tags.tags.len() - 1) as usize {
+            writeln!(output_stream, ",")?;
+        } else {
+            write!(output_stream, "\n")?;
+        }
+    }
+    writeln!(output_stream, "  ]")?;
+    writeln!(output_stream, " }}")?;
+
+    //writeln!(output_stream, "{:?}", prelude.file_tags)?;
+    /*
+    pub file_tags: TagSection,
+    pub read_tags: TagSection,
+    pub aln_tags: TagSection,
+    */
+    writeln!(output_stream, "}},")?;
+
+    // file tags
+    writeln!(output_stream, "\"file_tags\" : [")?;
+
+    let nft = prelude.file_tags.tags.len();
+    for (i, td) in prelude.file_tags.tags.iter().enumerate() {
+        if let Some(tv) = file_tag_map.get(&td.name) {
+            write!(
+                output_stream,
+                "{{ \"name\" : \"{}\", \"val\" : \"{:?}\" }}",
+                &td.name, tv
+            )?;
+            if i == nft - 1 {
+                write!(output_stream, "\n")?;
+            } else {
+                write!(output_stream, ",\n")?;
+            }
+        }
+    }
+    writeln!(output_stream, "],")?;
     Ok(())
 }
 
@@ -215,112 +337,9 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
     let file_tag_map = prelude.file_tags.try_parse_tags_from_bytes(&mut ifile)?;
 
     writeln!(output_stream, "{{")?;
+
     if !view_opts.no_header {
-        writeln!(output_stream, "\"rad_header\" : {{")?;
-        writeln!(output_stream, "\"is_paired\" : {},", prelude.hdr.is_paired)?;
-        writeln!(output_stream, "\"ref_count\" : {},", prelude.hdr.ref_count)?;
-
-        writeln!(output_stream, "\"refs\" : [")?;
-        for (i, rn) in prelude.hdr.ref_names.iter().enumerate() {
-            write!(output_stream, "\"{}\"", rn)?;
-            if i < (prelude.hdr.ref_count - 1) as usize {
-                writeln!(output_stream, ",")?;
-            }
-        }
-        writeln!(output_stream, "],")?;
-
-        writeln!(output_stream, "\"num_chunks\" : {}", prelude.hdr.num_chunks)?;
-        writeln!(output_stream, "}},")?;
-
-        writeln!(output_stream, "\"tag_descriptions\" : {{")?;
-
-        writeln!(output_stream, " \"file_tag_desc\" : {{")?;
-        writeln!(
-            output_stream,
-            "  \"label\" : \"{:?}\",",
-            prelude.file_tags.label
-        )?;
-
-        writeln!(output_stream, "  \"tag_desc\" : [")?;
-        for (i, td) in prelude.file_tags.tags.iter().enumerate() {
-            writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
-            write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
-            if i < (prelude.file_tags.tags.len() - 1) as usize {
-                writeln!(output_stream, ",")?;
-            } else {
-                write!(output_stream, "\n")?;
-            }
-        }
-        writeln!(output_stream, "  ]")?;
-        writeln!(output_stream, " }},")?;
-
-        writeln!(output_stream, " \"read_tag_desc\" : {{")?;
-        writeln!(
-            output_stream,
-            "  \"label\" : \"{:?}\",",
-            prelude.read_tags.label
-        )?;
-
-        writeln!(output_stream, "  \"tag_desc\" : [")?;
-        for (i, td) in prelude.read_tags.tags.iter().enumerate() {
-            writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
-            write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
-            if i < (prelude.read_tags.tags.len() - 1) as usize {
-                writeln!(output_stream, ",")?;
-            } else {
-                write!(output_stream, "\n")?;
-            }
-        }
-        writeln!(output_stream, "  ]")?;
-        writeln!(output_stream, " }},")?;
-
-        writeln!(output_stream, " \"aln_tag_desc\" : {{")?;
-        writeln!(
-            output_stream,
-            "  \"label\" : \"{:?}\",",
-            prelude.aln_tags.label
-        )?;
-
-        writeln!(output_stream, "  \"tag_desc\" : [")?;
-        for (i, td) in prelude.aln_tags.tags.iter().enumerate() {
-            writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
-            write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
-            if i < (prelude.aln_tags.tags.len() - 1) as usize {
-                writeln!(output_stream, ",")?;
-            } else {
-                write!(output_stream, "\n")?;
-            }
-        }
-        writeln!(output_stream, "  ]")?;
-        writeln!(output_stream, " }}")?;
-
-        //writeln!(output_stream, "{:?}", prelude.file_tags)?;
-        /*
-        pub file_tags: TagSection,
-        pub read_tags: TagSection,
-        pub aln_tags: TagSection,
-        */
-        writeln!(output_stream, "}},")?;
-
-        // file tags
-        writeln!(output_stream, "\"file_tags\" : [")?;
-
-        let nft = prelude.file_tags.tags.len();
-        for (i, td) in prelude.file_tags.tags.iter().enumerate() {
-            if let Some(tv) = file_tag_map.get(&td.name) {
-                write!(
-                    output_stream,
-                    "{{ \"name\" : \"{}\", \"val\" : \"{:?}\" }}",
-                    &td.name, tv
-                )?;
-                if i == nft - 1 {
-                    write!(output_stream, "\n")?;
-                } else {
-                    write!(output_stream, ",\n")?;
-                }
-            }
-        }
-        writeln!(output_stream, "],")?;
+        write_header(&prelude, &file_tag_map, &mut output_stream)?;
     }
 
     let mut extra_record_info = ExtraRecordInfo {
@@ -366,7 +385,6 @@ pub fn view(view_opts: &ViewOpts) -> anyhow::Result<()> {
     }
 
     writeln!(output_stream, "]")?;
-
     writeln!(output_stream, "}}")?;
 
     Ok(())
