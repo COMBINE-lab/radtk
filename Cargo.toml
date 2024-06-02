@@ -3,6 +3,7 @@ name = "radtk"
 version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/COMBINE-lab/radtk"
+website = "https://combine-lab.github.io/radtk"
 authors = [ "Rob Patro <rob@cs.umd.edu>" ]
 description = "A toolkit for working with RAD files"
 readme = "README.md"
