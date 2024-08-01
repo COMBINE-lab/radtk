@@ -6,7 +6,7 @@ use libradicl::record::{
 use needletail::bitkmer::*;
 use std::io;
 use std::io::{BufReader, Write};
-use tracing::{error, info, warn};
+use tracing::error;
 
 /// The types of RAD files supported
 #[derive(Clone, Debug, PartialEq, ValueEnum)]
