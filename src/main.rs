@@ -5,6 +5,8 @@ mod cat;
 use crate::cat::CatOpts;
 mod view;
 use crate::view::ViewOpts;
+mod split;
+use crate::split::SplitOpts;
 
 /// testing out minimizer space suffix arrays
 #[derive(Debug, Parser)]
@@ -21,6 +23,8 @@ pub enum Commands {
     Cat(CatOpts),
     /// view a text representation of the RAD file
     View(ViewOpts),
+    /// split an input RAD file into multiple output files
+    Split(SplitOpts),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -42,6 +46,7 @@ fn main() -> anyhow::Result<()> {
     match args.command {
         Commands::Cat(cat_opts) => cat::cat(&cat_opts)?,
         Commands::View(view_opts) => view::view(&view_opts)?,
+        Commands::Split(split_opts) => split::split(&split_opts)?,
     }
     Ok(())
 }

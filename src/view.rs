@@ -106,9 +106,9 @@ impl WriteMappingRecord for libradicl::record::PiscemBulkReadRecord {
             }
 
             if i < self.refs.len() - 1 {
-                write!(output_stream, ",\n")?;
+                writeln!(output_stream, ",")?;
             } else {
-                write!(output_stream, "\n")?;
+                writeln!(output_stream)?;
             }
         }
 
@@ -154,9 +154,9 @@ impl WriteMappingRecord for libradicl::record::AlevinFryReadRecord {
             }
 
             if i < self.refs.len() - 1 {
-                write!(output_stream, ",\n")?;
+                writeln!(output_stream, ",")?;
             } else {
-                write!(output_stream, "\n")?;
+                writeln!(output_stream)?;
             }
         }
 
@@ -179,25 +179,35 @@ pub fn write_records<
     output_stream: &mut Box<dyn Write>,
 ) -> anyhow::Result<()> {
     let tag_context = prelude.get_record_context::<RecordContext>()?;
-    let total_chunks = prelude.hdr.num_chunks as usize;
+    let total_chunks = if prelude.hdr.num_chunks > 0 {
+        prelude.hdr.num_chunks as usize
+    } else {
+        usize::MAX - 1
+    };
+    let mut chunk_num = 0;
+
     // output either the requested number of chunks, or all of them if no
     // request is provided (but never try to print more than the total).
     let num_chunks = extra_record_info
         .max_chunks
         .unwrap_or(total_chunks)
         .min(total_chunks);
-    // write out each chunk.
-    for chunk_num in 0..(num_chunks) {
+
+    while chunk_num < num_chunks
+        && libradicl::utils::has_data_left(ifile).expect("encountered error reading input file")
+    {
+        // write out each chunk.
         let chunk = libradicl::chunk::Chunk::<RecordType>::from_bytes(ifile, &tag_context);
         let nreads = chunk.reads.len();
         for (rnum, r) in chunk.reads.iter().enumerate() {
             r.write_records(extra_record_info, output_stream)?;
             if (chunk_num == num_chunks - 1) && (rnum == nreads - 1) {
-                write!(output_stream, "\n")?;
+                writeln!(output_stream)?;
             } else {
-                write!(output_stream, ",\n")?;
+                writeln!(output_stream, ",")?;
             }
         }
+        chunk_num += 1;
     }
     Ok(())
 }
@@ -236,10 +246,10 @@ pub fn write_header(
     for (i, td) in prelude.file_tags.tags.iter().enumerate() {
         writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
         write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
-        if i < (prelude.file_tags.tags.len() - 1) as usize {
+        if i < (prelude.file_tags.tags.len() - 1) {
             writeln!(output_stream, ",")?;
         } else {
-            write!(output_stream, "\n")?;
+            writeln!(output_stream)?;
         }
     }
     writeln!(output_stream, "  ]")?;
@@ -256,10 +266,10 @@ pub fn write_header(
     for (i, td) in prelude.read_tags.tags.iter().enumerate() {
         writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
         write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
-        if i < (prelude.read_tags.tags.len() - 1) as usize {
+        if i < (prelude.read_tags.tags.len() - 1) {
             writeln!(output_stream, ",")?;
         } else {
-            write!(output_stream, "\n")?;
+            writeln!(output_stream)?;
         }
     }
     writeln!(output_stream, "  ]")?;
@@ -276,10 +286,10 @@ pub fn write_header(
     for (i, td) in prelude.aln_tags.tags.iter().enumerate() {
         writeln!(output_stream, "   {{\n    \"name\" : \"{}\",", td.name)?;
         write!(output_stream, "    \"desc\" : \"{:?}\"\n   }}", td.typeid)?;
-        if i < (prelude.aln_tags.tags.len() - 1) as usize {
+        if i < (prelude.aln_tags.tags.len() - 1) {
             writeln!(output_stream, ",")?;
         } else {
-            write!(output_stream, "\n")?;
+            writeln!(output_stream)?;
         }
     }
     writeln!(output_stream, "  ]")?;
@@ -305,9 +315,9 @@ pub fn write_header(
                 &td.name, tv
             )?;
             if i == nft - 1 {
-                write!(output_stream, "\n")?;
+                writeln!(output_stream)?;
             } else {
-                write!(output_stream, ",\n")?;
+                writeln!(output_stream, ",")?;
             }
         }
     }
