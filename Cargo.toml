@@ -27,6 +27,7 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 anyhow = "1.0.86"
 clap = { version = "4.5.13", features = ["derive"] }
+indicatif = "0.17.8"
 libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.0" }
 needletail = "0.5.1"
 scroll = "0.12.0"
