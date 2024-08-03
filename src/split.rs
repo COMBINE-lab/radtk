@@ -1,5 +1,4 @@
 use clap::Parser;
-use scroll::Pread;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
 use tracing::info;
@@ -25,16 +24,6 @@ pub struct SplitOpts {
     /// be quiet (no progress bar or standard output messages)
     #[arg(short, long)]
     quiet: bool,
-}
-
-// TODO: There should be a "chunk-type-agnostic" read header function in `libradicl`
-// add this.
-fn read_chunk_header<F: std::io::BufRead>(f: &mut F) -> anyhow::Result<(u32, u32)> {
-    let mut buf = [0u8; 8];
-    f.read_exact(&mut buf)?;
-    let nbytes = buf.pread::<u32>(0)?;
-    let nrec = buf.pread::<u32>(4)?;
-    Ok((nbytes, nrec))
 }
 
 fn process_file<F: std::io::BufRead + std::io::Seek>(
@@ -79,7 +68,7 @@ fn process_file<F: std::io::BufRead + std::io::Seek>(
     tag_map.write_values(&mut out_writer)?;
 
     while libradicl::utils::has_data_left(f).expect("encountered error reading input file") {
-        let (num_bytes, num_rec) = read_chunk_header(f)?;
+        let (num_bytes, num_rec) = libradicl::utils::read_chunk_header(f)?;
 
         let num_new_rec = num_rec as usize;
         if rec_in_current_output > 0
